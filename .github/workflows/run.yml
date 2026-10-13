@@ -2,8 +2,8 @@ name: Bot Trading Alertes
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # S'exécute désormais TOUTES LES 15 MINUTES
-  workflow_dispatch: 
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -19,6 +19,18 @@ jobs:
 
       - name: Installation des dépendances
         run: pip install requests
+
+      - name: Vérification des secrets Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          if not os.getenv('BOT_TOKEN') or not os.getenv('CHAT_ID'):
+              raise SystemExit('BOT_TOKEN et CHAT_ID doivent être définis dans les secrets GitHub.')
+          print('Secrets Telegram OK')
+          PY
 
       - name: Lancement du script
         env:
