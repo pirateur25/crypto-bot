@@ -33,11 +33,11 @@ def envoyer_telegram(message):
     requests.post(url, json={"chat_id": chat_id, "text": message})
 
 
-# --- 1. ANALYSE DES BULLES APESANTEUR (15m) ---
-def verifier_bulles():
+# --- FONCTION GÉNÉRIQUE : CALCUL DES BULLES APESANTEUR ---
+def verifier_bulles(intervalle):
   for symbole in symboles:
     try:
-      url = f"https://api.binance.com/api/v3/klines?symbol={symbole}&interval=15m&limit=21"
+      url = f"https://api.binance.com/api/v3/klines?symbol={symbole}&interval={intervalle}&limit=21"
       res = requests.get(url).json()
       if isinstance(res, list) and len(res) >= 20:
         bougies = res[:-1]  # Retire la bougie en cours
@@ -54,17 +54,17 @@ def verifier_bulles():
 
         if low > bande_sup:
           envoyer_telegram(
-              f"🚀 Bulle Apesanteur HAUSSIÈRE sur {symbole} (15m)"
+              f"🚀 Bulle Apesanteur HAUSSIÈRE sur {symbole} ({intervalle})"
           )
         elif high < bande_inf:
           envoyer_telegram(
-              f"🔻 Bulle Apesanteur BAISSIÈRE sur {symbole} (15m)"
+              f"🔻 Bulle Apesanteur BAISSIÈRE sur {symbole} ({intervalle})"
           )
     except Exception as e:
-      print(f"Erreur Bulles {symbole}: {e}")
+      print(f"Erreur Bulles {intervalle} {symbole}: {e}")
 
 
-# --- 2. ANALYSE DES BPR (1h) ---
+# --- ANALYSE DES BPR (1h) ---
 def verifier_bpr():
   for symbole in symboles:
     try:
@@ -118,5 +118,9 @@ def verifier_bpr():
 
 
 if __name__ == "__main__":
-  verifier_bulles()
+  # 1. Bulles en 15 minutes
+  verifier_bulles("15m")
+  # 2. Bulles en 1 heure
+  verifier_bulles("1h")
+  # 3. BPR en 1 heure
   verifier_bpr()
