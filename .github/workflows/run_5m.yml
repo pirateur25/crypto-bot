@@ -1,0 +1,27 @@
+name: Bot Trading 5m
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # S'exécute toutes les 5 minutes
+  workflow_dispatch: 
+
+jobs:
+  run-bot-5m:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configuration de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Installation des dépendances
+        run: pip install requests
+
+      - name: Lancement du script 5m
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bot_5m.py
