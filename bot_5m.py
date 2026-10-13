@@ -1,6 +1,10 @@
 import os
 import json
 import requests
+if __name__ == "__main__":
+    print("Test d'envoi Telegram...")
+    print(send_telegram("Test alert Telegram ✅"))
+    verifier_bulles_5m()
 
 SYMBOLS = [
     "BTCUSDT",
