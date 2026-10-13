@@ -2,6 +2,13 @@ import os
 import json
 import requests
 
+if __name__ == "__main__":
+    print("Test d'envoi Telegram...")
+    print(send_telegram("Test alert Telegram ✅"))
+    check_bollinger("15m")
+    check_bollinger("1h")
+    check_bpr()
+    
 SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
