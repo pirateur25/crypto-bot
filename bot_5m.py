@@ -1,5 +1,5 @@
-# bot.py
-# Bot principal : détection Bollinger 15m/1h et BPR 1h
+# bot_5m.py
+# Bot pour unité 5 minutes
 # NOTE: la zone de test d'envoi Telegram en bas doit être SUPPRIMEE une fois la vérification faite.
 
 import os
@@ -18,8 +18,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 def envoyer_telegram(message):
     """
-    Envoie un message via l'API Telegram et logge le résultat.
-    Retourne True si status_code == 200, False sinon.
+    Envoie un message et logge le retour. Retourne True si ok.
     """
     if not BOT_TOKEN or not CHAT_ID:
         print("Telegram non configuré : BOT_TOKEN ou CHAT_ID manquant")
@@ -38,121 +37,55 @@ def envoyer_telegram(message):
         return False
 
 
-def bollinger_signal(symbol, interval):
+def verifier_bulles_5m():
     """
-    Retourne 'bullish' / 'bearish' / None en fonction de la position de la dernière bougie
-    fermée par rapport aux bandes de Bollinger (période 20, std 2).
-    """
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=41"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, list) or len(data) < 40:
-            return None
-
-        closes = [float(c[4]) for c in data[:-1]][-20:]
-        if len(closes) < 20:
-            return None
-
-        mean = sum(closes) / len(closes)
-        variance = sum((c - mean) ** 2 for c in closes) / len(closes)
-        std = variance ** 0.5
-        upper = mean + 2 * std
-        lower = mean - 2 * std
-
-        last_closed = data[-2]
-        low = float(last_closed[3])
-        high = float(last_closed[2])
-
-        if low > upper:
-            return "bullish"
-        if high < lower:
-            return "bearish"
-        return None
-    except Exception as e:
-        print(f"Erreur Bollinger {symbol} {interval}: {e}")
-        return None
-
-
-def verifier_bulles(interval):
-    """
-    Parcourt SYMBOLS et envoie un message quand une bulle est détectée.
+    Vérifie les bulles Bollinger en 5 minutes sur SYMBOLS.
     """
     for symbol in SYMBOLS:
-        sig = bollinger_signal(symbol, interval)
-        if sig is None:
-            continue
-        msg = f"<b>🚨 {interval}</b> | <b>{symbol}</b> | <b>Bulle apesanteur {sig.upper()}</b>"
-        print(f"Alert triggered: {symbol} {interval} {sig}")
-        envoyer_telegram(msg)
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=41"
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, list) or len(data) < 40:
+                continue
 
+            closes = [float(c[4]) for c in data[:-1]][-20:]
+            if len(closes) < 20:
+                continue
 
-def bpr_signal(symbol):
-    """
-    Détection simple BPR/FVG sur 1h.
-    Retourne 'bullish', 'bearish' ou None.
-    """
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=80"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, list) or len(data) < 60:
-            return None
+            mean = sum(closes) / len(closes)
+            variance = sum((c - mean) ** 2 for c in closes) / len(closes)
+            std = variance ** 0.5
+            upper = mean + 2 * std
+            lower = mean - 2 * std
 
-        candles = [{"high": float(c[2]), "low": float(c[3]), "close": float(c[4])} for c in data[:-1]]
-        latest = candles[-1]
+            last_closed = data[-2]
+            low = float(last_closed[3])
+            high = float(last_closed[2])
 
-        bullish_fvgs = []
-        bearish_fvgs = []
-
-        for i in range(2, len(candles) - 1):
-            prev = candles[i - 2]
-            cur = candles[i]
-            if prev["high"] < cur["low"]:
-                bullish_fvgs.append((prev["high"], cur["low"], i))
-            if prev["low"] > cur["high"]:
-                bearish_fvgs.append((prev["low"], cur["high"], i))
-
-        for low_p, high_p, idx in bullish_fvgs:
-            if idx < len(candles) - 1 and latest["low"] <= high_p and latest["high"] >= low_p:
-                return "bullish"
-
-        for low_p, high_p, idx in bearish_fvgs:
-            if idx < len(candles) - 1 and latest["low"] <= high_p and latest["high"] >= low_p:
-                return "bearish"
-
-        return None
-    except Exception as e:
-        print(f"Erreur BPR/FVG {symbol}: {e}")
-        return None
-
-
-def verifier_bpr():
-    for symbol in SYMBOLS:
-        sig = bpr_signal(symbol)
-        if sig is None:
-            continue
-        msg = f"<b>🎯 1H</b> | <b>{symbol}</b> | <b>BPR / FVG {sig.upper()}</b>"
-        print(f"BPR alert: {symbol} {sig}")
-        envoyer_telegram(msg)
+            if low > upper:
+                msg = f"<b>🚨 5M</b> | <b>{symbol}</b> | <b>Bulle apesanteur HAUSSIÈRE</b>"
+                print(f"5m alert bullish: {symbol}")
+                envoyer_telegram(msg)
+            elif high < lower:
+                msg = f"<b>🚨 5M</b> | <b>{symbol}</b> | <b>Bulle apesanteur BAISSIÈRE</b>"
+                print(f"5m alert bearish: {symbol}")
+                envoyer_telegram(msg)
+        except Exception as e:
+            print(f"Erreur Bulles 5m {symbol}: {e}")
 
 
 if __name__ == "__main__":
     # =========================
     # ZONE DE TEST — A SUPPRIMER EN PROD
-    # On envoie un message de test et on logge le résultat. Retirer ensuite.
-    print("Test d'envoi Telegram... (zone de test, supprimer après vérif)")
+    print("Test d'envoi Telegram (5m) ... (zone de test, supprimer après vérif)")
     try:
-        result = envoyer_telegram("Test alert Telegram ✅ (supprimer ce message après vérif)")
-        print("Résultat send test:", result)
+        res = envoyer_telegram("Test alert Telegram 5m ✅ (supprimer ce message après vérif)")
+        print("Résultat send test 5m:", res)
     except Exception as e:
-        print("Exception lors du test d'envoi:", e)
+        print("Exception lors du test d'envoi 5m:", e)
     # FIN ZONE DE TEST
     # =========================
 
-    # Exécutions normales
-    verifier_bulles("15m")
-    verifier_bulles("1h")
-    verifier_bpr()
+    verifier_bulles_5m()
