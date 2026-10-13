@@ -140,18 +140,6 @@ def verifier_bpr():
 
 
 if __name__ == "__main__":
-    # =========================
-    # ZONE DE TEST — A SUPPRIMER EN PROD
-    # On envoie un message de test et on logge le résultat. Retirer ensuite.
-    print("Test d'envoi Telegram... (zone de test, supprimer après vérif)")
-    try:
-        result = envoyer_telegram("Test alert Telegram ✅ (supprimer ce message après vérif)")
-        print("Résultat send test:", result)
-    except Exception as e:
-        print("Exception lors du test d'envoi:", e)
-    # FIN ZONE DE TEST
-    # =========================
-
     # Exécutions normales
     verifier_bulles("15m")
     verifier_bulles("1h")
