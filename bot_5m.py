@@ -77,15 +77,4 @@ def verifier_bulles_5m():
 
 
 if __name__ == "__main__":
-    # =========================
-    # ZONE DE TEST — A SUPPRIMER EN PROD
-    print("Test d'envoi Telegram (5m) ... (zone de test, supprimer après vérif)")
-    try:
-        res = envoyer_telegram("Test alert Telegram 5m ✅ (supprimer ce message après vérif)")
-        print("Résultat send test 5m:", res)
-    except Exception as e:
-        print("Exception lors du test d'envoi 5m:", e)
-    # FIN ZONE DE TEST
-    # =========================
-
     verifier_bulles_5m()
