@@ -1,0 +1,28 @@
+name: Bot Trading Alertes
+
+on:
+  schedule:
+    - cron: '0 * * * *' # S'exécute automatiquement au début de chaque heure
+  workflow_dispatch: # Permet de lancer le script manuellement depuis son téléphone quand on veut
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configuration de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Installation des dépendances
+        run: pip install requests
+
+      - name: Lancement du script
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bot.py
+        
