@@ -1,8 +1,8 @@
 import os
+import json
 import requests
 
-# Votre liste d'actifs
-symboles = [
+SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
     "SOLUSDT",
@@ -22,105 +22,156 @@ symboles = [
     "WIFUSDT",
 ]
 
-# Récupération automatique des clés Telegram stockées dans les secrets GitHub
-bot_token = os.environ.get("BOT_TOKEN")
-chat_id = os.environ.get("CHAT_ID")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 
-def envoyer_telegram(message):
-  if bot_token and chat_id:
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": message})
-
-
-# --- FONCTION GÉNÉRIQUE : CALCUL DES BULLES APESANTEUR ---
-def verifier_bulles(intervalle):
-  for symbole in symboles:
+def load_sent(filename):
     try:
-      url = f"https://api.binance.com/api/v3/klines?symbol={symbole}&interval={intervalle}&limit=21"
-      res = requests.get(url).json()
-      if isinstance(res, list) and len(res) >= 20:
-        bougies = res[:-1]  # Retire la bougie en cours
-        closes = [float(b[4]) for b in bougies]
-        low = float(bougies[-1][3])
-        high = float(bougies[-1][2])
-
-        moyenne = sum(closes) / 20
-        variance = sum((c - moyenne) ** 2 for c in closes) / 20
-        ecart_type = variance**0.5
-
-        bande_sup = moyenne + (2 * ecart_type)
-        bande_inf = moyenne - (2 * ecart_type)
-
-        if low > bande_sup:
-          envoyer_telegram(
-              f"🚀 Bulle Apesanteur HAUSSIÈRE sur {symbole} ({intervalle})"
-          )
-        elif high < bande_inf:
-          envoyer_telegram(
-              f"🔻 Bulle Apesanteur BAISSIÈRE sur {symbole} ({intervalle})"
-          )
-    except Exception as e:
-      print(f"Erreur Bulles {intervalle} {symbole}: {e}")
+        with open(filename, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
 
 
-# --- ANALYSE DES BPR (1h) ---
-def verifier_bpr():
-  for symbole in symboles:
+def save_sent(filename, sent):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(sorted(list(sent))[-2000:], f)
+
+
+def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram non configuré : BOT_TOKEN ou CHAT_ID manquant")
+        return False
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+
     try:
-      url = f"https://api.binance.com/api/v3/klines?symbol={symbole}&interval=1h&limit=50"
-      res = requests.get(url).json()
-      if isinstance(res, list) and len(res) >= 40:
-        bougies_raw = res[:-1]
-        bougies = [{"high": float(b[2]), "low": float(b[3])} for b in bougies_raw]
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            return True
+        print(f"Erreur Telegram ({response.status_code}): {response.text[:200]}")
+        return False
+    except Exception as exc:
+        print(f"Erreur d'envoi Telegram: {exc}")
+        return False
+
+
+def alert_once(filename, key, message):
+    sent = load_sent(filename)
+    if key in sent:
+        return False
+    sent.add(key)
+    save_sent(filename, sent)
+    return send_telegram(message)
+
+
+def bollinger_signal(symbol, interval):
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=41"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if not isinstance(data, list) or len(data) < 40:
+            return None
+
+        closes = [float(candle[4]) for candle in data[:-1]][-20:]
+        if len(closes) < 20:
+            return None
+
+        mean = sum(closes) / len(closes)
+        variance = sum((close - mean) ** 2 for close in closes) / len(closes)
+        std = variance ** 0.5
+
+        upper = mean + (2 * std)
+        lower = mean - (2 * std)
+
+        last_closed = data[-2]
+        low = float(last_closed[3])
+        high = float(last_closed[2])
+
+        if low > upper:
+            return "bullish"
+        if high < lower:
+            return "bearish"
+        return None
+    except Exception as exc:
+        print(f"Erreur Bollinger {symbol} {interval}: {exc}")
+        return None
+
+
+def check_bollinger(interval):
+    for symbol in SYMBOLS:
+        signal = bollinger_signal(symbol, interval)
+        if signal is None:
+            continue
+
+        key = f"{symbol}:{interval}:bollinger:{signal}"
+        message = (
+            f"<b>🚨 {interval}</b> | <b>{symbol}</b> | "
+            f"<b>Bulle apesanteur {signal.upper()}</b>"
+        )
+        alert_once("sent_alerts.json", key, message)
+
+
+def bpr_signal(symbol):
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=80"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if not isinstance(data, list) or len(data) < 60:
+            return None
+
+        candles = [
+            {"high": float(candle[2]), "low": float(candle[3]), "close": float(candle[4])}
+            for candle in data[:-1]
+        ]
+        latest = candles[-1]
 
         bullish_fvgs = []
         bearish_fvgs = []
 
-        for i in range(2, len(bougies)):
-          c1 = bougies[i - 2]
-          c3 = bougies[i]
-          if c1["high"] < c3["low"]:
-            bullish_fvgs.append({"top": c3["low"], "bottom": c1["high"], "index": i})
-          if c1["low"] > c3["high"]:
-            bearish_fvgs.append({"top": c1["low"], "bottom": c3["high"], "index": i})
+        for i in range(2, len(candles) - 1):
+            previous = candles[i - 2]
+            current = candles[i]
+            if previous["high"] < current["low"]:
+                bullish_fvgs.append((previous["high"], current["low"], i))
+            if previous["low"] > current["high"]:
+                bearish_fvgs.append((previous["low"], current["high"], i))
 
-        bprs = []
-        for bull in bullish_fvgs:
-          for bear in bearish_fvgs:
-            bpr_top = min(bull["top"], bear["top"])
-            bpr_bottom = max(bull["bottom"], bear["bottom"])
-            if bpr_bottom < bpr_top:
-              bprs.append({
-                  "top": bpr_top,
-                  "bottom": bpr_bottom,
-                  "maxIndex": max(bull["index"], bear["index"]),
-              })
+        for low_price, high_price, index in bullish_fvgs:
+            if index < len(candles) - 1 and latest["low"] <= high_price and latest["high"] >= low_price:
+                return "bullish"
 
-        derniere_index = len(bougies) - 1
-        derniere_bougie = bougies[derniere_index]
-        bpr_touche = False
+        for low_price, high_price, index in bearish_fvgs:
+            if index < len(candles) - 1 and latest["low"] <= high_price and latest["high"] >= low_price:
+                return "bearish"
 
-        for bpr in bprs:
-          if bpr["maxIndex"] < derniere_index:
-            if (
-                derniere_bougie["low"] <= bpr["top"]
-                and derniere_bougie["high"] >= bpr["bottom"]
-            ):
-              bpr_touche = True
+        return None
+    except Exception as exc:
+        print(f"Erreur BPR/FVG {symbol}: {exc}")
+        return None
 
-        if bpr_touche:
-          envoyer_telegram(
-              f"🎯 Prix de retour dans un BPR détecté sur {symbole} (1h)"
-          )
-    except Exception as e:
-      print(f"Erreur BPR {symbole}: {e}")
+
+def check_bpr():
+    for symbol in SYMBOLS:
+        signal = bpr_signal(symbol)
+        if signal is None:
+            continue
+
+        key = f"{symbol}:1h:bpr:{signal}"
+        message = (
+            f"<b>🎯 1H</b> | <b>{symbol}</b> | "
+            f"<b>BPR / FVG {signal.upper()}</b>"
+        )
+        alert_once("sent_alerts.json", key, message)
 
 
 if __name__ == "__main__":
-  # 1. Bulles en 15 minutes
-  verifier_bulles("15m")
-  # 2. Bulles en 1 heure
-  verifier_bulles("1h")
-  # 3. BPR en 1 heure
-  verifier_bpr()
+    check_bollinger("15m")
+    check_bollinger("1h")
+    check_bpr()
