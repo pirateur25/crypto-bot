@@ -2,7 +2,7 @@ name: Bot Trading 5m
 
 on:
   schedule:
-    - cron: '3-58/5 * * * *'   # :03, :08, :13, :18...
+    - cron: '3-58/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -11,13 +11,6 @@ jobs:
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
-
-      - name: Diagnostic: show commit + script head
-        run: |
-          echo "GIT HEAD:"
-          git rev-parse --verify HEAD
-          echo "---- bot_5m.py (head 1-200) ----"
-          sed -n '1,200p' bot_5m.py || true
 
       - name: Configuration de Python
         uses: actions/setup-python@v5
