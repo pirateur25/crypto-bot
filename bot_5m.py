@@ -243,7 +243,9 @@ def verifier_bulles_5m():
 # Ce bloc envoie un message Telegram contenant la liste des dernières bougies fermées (O/C)
 # pour tous les SYMBOLS à CHAQUE exécution du job 5m. Supprime ce bloc après vérif.
 
+# Remplacer/ajouter la fonction send_candles_snapshot par celle-ci (plus robuste)
 def send_candles_snapshot():
+    print("SNAPSHOT: start send_candles_snapshot()")
     parts = []
     for symbol in SYMBOLS:
         try:
@@ -254,16 +256,28 @@ def send_candles_snapshot():
                 continue
             last = data[-2]
             o = last[1]; c = last[4]
+            # garder format court pour éviter messages trop longs
             parts.append(f"{symbol} O:{o} C:{c}")
         except Exception as e:
+            # log explicite pour debug
+            print(f"SNAPSHOT ERROR for {symbol}: {e}")
             parts.append(f"{symbol}: err")
+    # limiter la longueur du message (quelques symboles si besoin)
     text = "<b>Snapshot 5m</b>\n" + "\n".join(parts)
-    send_telegram_with_retries(text)
+    try:
+        sent = send_telegram_with_retries(text)
+        print("SNAPSHOT: send_telegram_with_retries returned", sent)
+    except Exception as e:
+        print("SNAPSHOT: send_telegram raised exception:", e)
+    print("SNAPSHOT: end send_candles_snapshot()")
 
 # ---------------- main ----------------
 
 if __name__ == "__main__":
-    # BLOC TEST: envoie snapshot à chaque run (SUPPRIMER plus tard si indésirable)
-    send_candles_snapshot()
+    # Envoie le snapshot à CHAQUE exécution (à supprimer plus tard)
+    try:
+        send_candles_snapshot()
+    except Exception as e:
+        print("Main: send_candles_snapshot() exception:", e)
 
     verifier_bulles_5m()
