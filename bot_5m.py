@@ -90,30 +90,55 @@ def mark_alert_sent(key):
     sent.add(key)
     save_sent(sent)
     return True
-
 def bollinger_body_signal_5m(symbol):
+    """
+    Récupère les klines 5m et calcule les bandes Bollinger sur les 20 dernières bougies fermées.
+    Affiche des logs DEBUG détaillés (open/high/low/close, upper/lower, body_low/body_high)
+    pour aider au diagnostic. Retourne 'bullish' / 'bearish' / None.
+    """
     data = get_klines_with_retries(symbol, "5m", limit=41)
     time.sleep(0.12)
     if not isinstance(data, list) or len(data) < 40:
+        print(f"DEBUG {symbol} 5m -> no data or insufficient klines (len={len(data) if isinstance(data, list) else 'NA'})")
         return None
+
+    # Utiliser les 20 dernières bougies fermées
     closes = [float(c[4]) for c in data[:-1]][-20:]
     if len(closes) < 20:
+        print(f"DEBUG {symbol} 5m -> not enough closed candles for Bollinger (found {len(closes)})")
         return None
+
     mean = sum(closes) / len(closes)
     variance = sum((c - mean) ** 2 for c in closes) / len(closes)
     std = variance ** 0.5
     upper = mean + 2 * std
     lower = mean - 2 * std
+
+    # Dernière bougie fermée (index -2)
     last = data[-2]
-    o = float(last[1])
-    c = float(last[4])
-    body_low = min(o, c)
-    body_high = max(o, c)
+    open_price = float(last[1])
+    high_price = float(last[2])
+    low_price = float(last[3])
+    close_price = float(last[4])
+
+    body_low = min(open_price, close_price)
+    body_high = max(open_price, close_price)
+
+    # Debug prints détaillés
+    print(
+        f"DEBUG {symbol} 5m -> last_closed O:{open_price} H:{high_price} L:{low_price} C:{close_price} | "
+        f"upper:{upper:.8f} lower:{lower:.8f} | body_low:{body_low} body_high:{body_high}"
+    )
+
+    # Décision basée uniquement sur le corps (ignore les mèches)
+    sig = None
     if body_low > upper:
-        return "bullish"
-    if body_high < lower:
-        return "bearish"
-    return None
+        sig = "bullish"
+    elif body_high < lower:
+        sig = "bearish"
+
+    print(f"DEBUG {symbol} 5m -> decision: {sig if sig else 'NONE'}")
+    return sig
 
 def verifier_bulles_5m():
     for symbol in SYMBOLS:
