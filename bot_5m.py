@@ -20,25 +20,158 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ALERTS_FILE = "sent_alerts.json"
 
-def get_klines_with_retries(symbol, interval="5m", limit=41, max_retries=4):
+# Remplacer get_klines_with_retries par ce bloc (et coller aussi les 2 helpers)
+import time
+import requests
+
+def get_klines_bybit(symbol, interval_minutes, limit=200):
+    """
+    Bybit public Kline (v2) fallback.
+    interval_minutes: 5, 15, 60
+    Returns list similar to Binance kline structure if possible, otherwise None.
+    Bybit v2 endpoint returns [openTime, open, high, low, close, volume].
+    We'll convert to Binance-like minimal rows.
+    """
+    try:
+        # Bybit expects interval like '5' for 5min, '15' for 15min, '60' for 1h
+        url = f"https://api.bybit.com/v2/public/kline/list?symbol={symbol}&interval={interval_minutes}&limit={limit}"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data.get("result"):
+            return None
+        rows = data["result"]
+        # Convert rows to Binance-like array: [openTime, open, high, low, close, volume, closeTime ...]
+        klines = []
+        for row in rows:
+            # row has: start_at, open, high, low, close, volume
+            openTime = row.get("start_at")
+            open_p = str(row.get("open"))
+            high = str(row.get("high"))
+            low = str(row.get("low"))
+            close = str(row.get("close"))
+            vol = str(row.get("volume"))
+            closeTime = openTime + interval_minutes * 60 if isinstance(openTime, int) else None
+            k = [openTime, open_p, high, low, close, vol, closeTime]
+            klines.append(k)
+        # Bybit returns oldest first; ensure same ordering as Binance
+        return list(reversed(klines)) if len(klines) > 0 else klines
+    except Exception as e:
+        print("Bybit kline fetch error:", e)
+        return None
+
+def get_klines_kucoin(symbol, interval_type, limit=200):
+    """
+    KuCoin public candles fallback.
+    interval_type is "5min", "15min", "1hour" mapping from your interval string.
+    KuCoin symbol format: 'SOL-USDT' not 'SOLUSDT', so we try common transformations.
+    Returns list of klines as arrays [time, open, close, high, low, volume] (KuCoin order).
+    We'll convert to Binance-like rows.
+    """
+    try:
+        # transform symbol: BTCUSDT -> BTC-USDT
+        if symbol.endswith("USDT"):
+            ku_symbol = symbol[:-4] + "-USDT"
+        else:
+            ku_symbol = symbol
+        url = f"https://api.kucoin.com/api/v1/market/candles?type={interval_type}&symbol={ku_symbol}&limit={limit}"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data.get("data"):
+            return None
+        rows = data["data"]  # each row: [time, open, close, high, low, volume]
+        klines = []
+        for row in rows:
+            t = int(row[0])
+            open_p = row[1]
+            close = row[2]
+            high = row[3]
+            low = row[4]
+            vol = row[5]
+            closeTime = t + 0  # Kucoin returns time of candle start; keep closeTime=None or compute if needed
+            # Convert to Binance-like: [openTime, open, high, low, close, volume, closeTime]
+            k = [t, open_p, high, low, close, vol, closeTime]
+            klines.append(k)
+        # KuCoin returns newest first (check), we keep order so that data[-2] corresponds to last closed
+        return list(reversed(klines))
+    except Exception as e:
+        print("KuCoin kline fetch error:", e)
+        return None
+
+def map_interval_to_bybit_minutes(interval_str):
+    # expects inputs like "5m","15m","1h"
+    if interval_str == "5m":
+        return 5
+    if interval_str == "15m":
+        return 15
+    if interval_str == "1h":
+        return 60
+    # default approximate for other strings
+    if interval_str.endswith("m"):
+        return int(interval_str[:-1])
+    if interval_str.endswith("h"):
+        return int(interval_str[:-1]) * 60
+    return 5
+
+def map_interval_to_kucoin_type(interval_str):
+    if interval_str == "5m":
+        return "5min"
+    if interval_str == "15m":
+        return "15min"
+    if interval_str == "1h":
+        return "1hour"
+    return "5min"
+
+def get_klines_with_retries(symbol, interval, limit=41, max_retries=4):
+    """
+    First try Binance. If Binance returns 451 (restricted location) or fails,
+    try Bybit then KuCoin as fallback. Returns a list of kline-like arrays or None.
+    """
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     backoff = 1
     for attempt in range(max_retries):
         try:
             r = requests.get(url, timeout=10)
+            # handle success
             if r.status_code == 200:
                 return r.json()
+            # if Binance blocks for restricted location (451) -> fallback immediately
+            if r.status_code == 451:
+                print(f"Binance returned 451 for {symbol} {interval}, trying fallbacks.")
+                break
+            # retry on rate limit / server errors
             if r.status_code == 429 or 500 <= r.status_code < 600:
                 time.sleep(backoff)
                 backoff *= 2
                 continue
+            # other error -> log and stop trying Binance
             print(f"Binance error {r.status_code} for {symbol} {interval}: {r.text[:200]}")
-            return None
+            break
         except requests.RequestException as e:
             print(f"Network error fetching klines {symbol} {interval}: {e}")
             time.sleep(backoff)
             backoff *= 2
-    print(f"Failed to fetch klines {symbol} {interval} after {max_retries} attempts")
+    # Fallback to Bybit
+    try:
+        bybit_minutes = map_interval_to_bybit_minutes(interval)
+        kb = get_klines_bybit(symbol, bybit_minutes, limit=limit)
+        if kb:
+            print(f"Using Bybit fallback for {symbol} {interval}")
+            return kb
+    except Exception as e:
+        print("Bybit fallback failed:", e)
+    # Fallback to KuCoin
+    try:
+        ku_type = map_interval_to_kucoin_type(interval)
+        kk = get_klines_kucoin(symbol, ku_type, limit=limit)
+        if kk:
+            print(f"Using KuCoin fallback for {symbol} {interval}")
+            return kk
+    except Exception as e:
+        print("KuCoin fallback failed:", e)
     return None
 
 def send_telegram_with_retries(message, max_retries=3):
