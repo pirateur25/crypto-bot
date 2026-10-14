@@ -1,8 +1,6 @@
 name: Bot Trading Alertes
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
