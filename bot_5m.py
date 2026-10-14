@@ -239,48 +239,11 @@ def verifier_bulles_5m():
         except Exception as e:
             print(f"Erreur verifier_bulles_5m {symbol}: {e}")
 
-# ---------------- BLOC TEST À SUPPRIMER (envoie la donnée de la bougie à chaque run) ----------------
-# Ce bloc envoie un message Telegram contenant la liste des dernières bougies fermées (O/C)
-# pour tous les SYMBOLS à CHAQUE exécution du job 5m. Supprime ce bloc après vérif.
 
-# ---------------- BLOC TEST (robuste) ----------------
-# Envoie un snapshot à CHAQUE exécution. Supprime ce bloc après vérification.
-
-def send_candles_snapshot():
-    print("SNAPSHOT: start send_candles_snapshot()")
-    parts = []
-    for symbol in SYMBOLS:
-        try:
-            data = get_klines_with_retries(symbol, "5m", limit=5)
-            time.sleep(0.08)
-            if not isinstance(data, list) or len(data) < 2:
-                parts.append(f"{symbol}: no data")
-                continue
-            last = data[-2]
-            o = last[1]; c = last[4]
-            parts.append(f"{symbol} O:{o} C:{c}")
-        except Exception as e:
-            print(f"SNAPSHOT ERROR for {symbol}: {e}")
-            parts.append(f"{symbol}: err")
-    text = "<b>Snapshot 5m</b>\n" + "\n".join(parts)
-    try:
-        sent = send_telegram_with_retries(text)
-        print("SNAPSHOT: send_telegram_with_retries returned", sent)
-    except Exception as e:
-        print("SNAPSHOT: send_telegram raised exception:", e)
-    print("SNAPSHOT: end send_candles_snapshot()")
 
 # ---------------- main ----------------
 if __name__ == "__main__":
-    # BLOC TEST: envoie snapshot à chaque run (SUPPRIMER plus tard si indésirable)
-    try:
-        # Vérifie que la fonction existe avant l'appel
-        if 'send_candles_snapshot' in globals():
-            send_candles_snapshot()
-        else:
-            print("SNAPSHOT: send_candles_snapshot not defined, skipping.")
-    except Exception as e:
-        print("Main: send_candles_snapshot() exception:", e)
+
 
     # Lance la vérification 5m normalement
     try:
