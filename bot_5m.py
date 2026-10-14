@@ -156,4 +156,8 @@ def verifier_bulles_5m():
             print(f"Erreur verifier_bulles_5m {symbol}: {e}")
 
 if __name__ == "__main__":
+   # --- HEARTBEAT TEMPORAIRE (à supprimer après diagnostic) --
+    import datetime
+    now = datetime.datetime.utcnow().isoformat()
+    send_telegram_with_retries(f"HEARTBEAT: bot_5m run at {now} UTC")
     verifier_bulles_5m()
