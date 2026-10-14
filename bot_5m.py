@@ -1,7 +1,7 @@
 # bot_5m.py
 # Détection Bollinger 5m (corps de la bougie uniquement)
-# - Anti-doublon local via sent_alerts.json
-# - Pas de persistance GitHub / pas de variables supplémentaires
+# Anti-doublon local via sent_alerts.json, fallback Bybit/KuCoin si Binance bloqué
+# Contient un BLOC TEST (à SUPPRIMER après validation) qui envoie la donnée de la bougie à chaque run.
 
 import os
 import time
@@ -17,23 +17,12 @@ SYMBOLS = [
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
 ALERTS_FILE = "sent_alerts.json"
 
-# Remplacer get_klines_with_retries par ce bloc (et coller aussi les 2 helpers)
-import time
-import requests
+# ---------------- fallbacks / network ----------------
 
 def get_klines_bybit(symbol, interval_minutes, limit=200):
-    """
-    Bybit public Kline (v2) fallback.
-    interval_minutes: 5, 15, 60
-    Returns list similar to Binance kline structure if possible, otherwise None.
-    Bybit v2 endpoint returns [openTime, open, high, low, close, volume].
-    We'll convert to Binance-like minimal rows.
-    """
     try:
-        # Bybit expects interval like '5' for 5min, '15' for 15min, '60' for 1h
         url = f"https://api.bybit.com/v2/public/kline/list?symbol={symbol}&interval={interval_minutes}&limit={limit}"
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
@@ -42,35 +31,23 @@ def get_klines_bybit(symbol, interval_minutes, limit=200):
         if not data.get("result"):
             return None
         rows = data["result"]
-        # Convert rows to Binance-like array: [openTime, open, high, low, close, volume, closeTime ...]
         klines = []
         for row in rows:
-            # row has: start_at, open, high, low, close, volume
             openTime = row.get("start_at")
             open_p = str(row.get("open"))
             high = str(row.get("high"))
             low = str(row.get("low"))
             close = str(row.get("close"))
             vol = str(row.get("volume"))
-            closeTime = openTime + interval_minutes * 60 if isinstance(openTime, int) else None
-            k = [openTime, open_p, high, low, close, vol, closeTime]
+            k = [openTime, open_p, high, low, close, vol, openTime + interval_minutes * 60 if isinstance(openTime, int) else None]
             klines.append(k)
-        # Bybit returns oldest first; ensure same ordering as Binance
-        return list(reversed(klines)) if len(klines) > 0 else klines
+        return klines
     except Exception as e:
         print("Bybit kline fetch error:", e)
         return None
 
 def get_klines_kucoin(symbol, interval_type, limit=200):
-    """
-    KuCoin public candles fallback.
-    interval_type is "5min", "15min", "1hour" mapping from your interval string.
-    KuCoin symbol format: 'SOL-USDT' not 'SOLUSDT', so we try common transformations.
-    Returns list of klines as arrays [time, open, close, high, low, volume] (KuCoin order).
-    We'll convert to Binance-like rows.
-    """
     try:
-        # transform symbol: BTCUSDT -> BTC-USDT
         if symbol.endswith("USDT"):
             ku_symbol = symbol[:-4] + "-USDT"
         else:
@@ -80,36 +57,31 @@ def get_klines_kucoin(symbol, interval_type, limit=200):
         if r.status_code != 200:
             return None
         data = r.json()
-        if not data.get("data"):
+        rows = data.get("data")
+        if not rows:
             return None
-        rows = data["data"]  # each row: [time, open, close, high, low, volume]
         klines = []
-        for row in rows:
+        for row in reversed(rows):
             t = int(row[0])
             open_p = row[1]
             close = row[2]
             high = row[3]
             low = row[4]
             vol = row[5]
-            closeTime = t + 0  # Kucoin returns time of candle start; keep closeTime=None or compute if needed
-            # Convert to Binance-like: [openTime, open, high, low, close, volume, closeTime]
-            k = [t, open_p, high, low, close, vol, closeTime]
+            k = [t, open_p, high, low, close, vol, t]
             klines.append(k)
-        # KuCoin returns newest first (check), we keep order so that data[-2] corresponds to last closed
-        return list(reversed(klines))
+        return klines
     except Exception as e:
         print("KuCoin kline fetch error:", e)
         return None
 
 def map_interval_to_bybit_minutes(interval_str):
-    # expects inputs like "5m","15m","1h"
     if interval_str == "5m":
         return 5
     if interval_str == "15m":
         return 15
     if interval_str == "1h":
         return 60
-    # default approximate for other strings
     if interval_str.endswith("m"):
         return int(interval_str[:-1])
     if interval_str.endswith("h"):
@@ -125,45 +97,35 @@ def map_interval_to_kucoin_type(interval_str):
         return "1hour"
     return "5min"
 
-def get_klines_with_retries(symbol, interval, limit=41, max_retries=4):
-    """
-    First try Binance. If Binance returns 451 (restricted location) or fails,
-    try Bybit then KuCoin as fallback. Returns a list of kline-like arrays or None.
-    """
+def get_klines_with_retries(symbol, interval, limit=41, max_retries=3):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     backoff = 1
     for attempt in range(max_retries):
         try:
             r = requests.get(url, timeout=10)
-            # handle success
             if r.status_code == 200:
                 return r.json()
-            # if Binance blocks for restricted location (451) -> fallback immediately
             if r.status_code == 451:
                 print(f"Binance returned 451 for {symbol} {interval}, trying fallbacks.")
                 break
-            # retry on rate limit / server errors
             if r.status_code == 429 or 500 <= r.status_code < 600:
                 time.sleep(backoff)
                 backoff *= 2
                 continue
-            # other error -> log and stop trying Binance
             print(f"Binance error {r.status_code} for {symbol} {interval}: {r.text[:200]}")
             break
         except requests.RequestException as e:
             print(f"Network error fetching klines {symbol} {interval}: {e}")
             time.sleep(backoff)
             backoff *= 2
-    # Fallback to Bybit
     try:
-        bybit_minutes = map_interval_to_bybit_minutes(interval)
-        kb = get_klines_bybit(symbol, bybit_minutes, limit=limit)
+        by_minutes = map_interval_to_bybit_minutes(interval)
+        kb = get_klines_bybit(symbol, by_minutes, limit=limit)
         if kb:
             print(f"Using Bybit fallback for {symbol} {interval}")
             return kb
     except Exception as e:
         print("Bybit fallback failed:", e)
-    # Fallback to KuCoin
     try:
         ku_type = map_interval_to_kucoin_type(interval)
         kk = get_klines_kucoin(symbol, ku_type, limit=limit)
@@ -174,6 +136,8 @@ def get_klines_with_retries(symbol, interval, limit=41, max_retries=4):
         print("KuCoin fallback failed:", e)
     return None
 
+# ---------------- telegram ----------------
+
 def send_telegram_with_retries(message, max_retries=3):
     if not BOT_TOKEN or not CHAT_ID:
         print("Telegram non configuré : BOT_TOKEN ou CHAT_ID manquant")
@@ -181,7 +145,7 @@ def send_telegram_with_retries(message, max_retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     backoff = 1
-    for attempt in range(max_retries):
+    for _ in range(max_retries):
         try:
             r = requests.post(url, json=payload, timeout=10)
             print("send_telegram -> status:", r.status_code)
@@ -198,6 +162,8 @@ def send_telegram_with_retries(message, max_retries=3):
             time.sleep(backoff)
             backoff *= 2
     return False
+
+# ---------------- anti-duplicate ----------------
 
 def load_sent(filename=ALERTS_FILE):
     try:
@@ -223,55 +189,40 @@ def mark_alert_sent(key):
     sent.add(key)
     save_sent(sent)
     return True
+
+# ---------------- Bollinger 5m body-only ----------------
+
 def bollinger_body_signal_5m(symbol):
-    """
-    Récupère les klines 5m et calcule les bandes Bollinger sur les 20 dernières bougies fermées.
-    Affiche des logs DEBUG détaillés (open/high/low/close, upper/lower, body_low/body_high)
-    pour aider au diagnostic. Retourne 'bullish' / 'bearish' / None.
-    """
     data = get_klines_with_retries(symbol, "5m", limit=41)
     time.sleep(0.12)
     if not isinstance(data, list) or len(data) < 40:
         print(f"DEBUG {symbol} 5m -> no data or insufficient klines (len={len(data) if isinstance(data, list) else 'NA'})")
         return None
-
-    # Utiliser les 20 dernières bougies fermées
     closes = [float(c[4]) for c in data[:-1]][-20:]
     if len(closes) < 20:
-        print(f"DEBUG {symbol} 5m -> not enough closed candles for Bollinger (found {len(closes)})")
+        print(f"DEBUG {symbol} 5m -> not enough closed candles")
         return None
-
     mean = sum(closes) / len(closes)
     variance = sum((c - mean) ** 2 for c in closes) / len(closes)
     std = variance ** 0.5
     upper = mean + 2 * std
     lower = mean - 2 * std
-
-    # Dernière bougie fermée (index -2)
     last = data[-2]
     open_price = float(last[1])
     high_price = float(last[2])
     low_price = float(last[3])
     close_price = float(last[4])
-
     body_low = min(open_price, close_price)
     body_high = max(open_price, close_price)
-
-    # Debug prints détaillés
-    print(
-        f"DEBUG {symbol} 5m -> last_closed O:{open_price} H:{high_price} L:{low_price} C:{close_price} | "
-        f"upper:{upper:.8f} lower:{lower:.8f} | body_low:{body_low} body_high:{body_high}"
-    )
-
-    # Décision basée uniquement sur le corps (ignore les mèches)
-    sig = None
+    print(f"DEBUG {symbol} 5m -> last_closed O:{open_price} H:{high_price} L:{low_price} C:{close_price} | upper:{upper:.8f} lower:{lower:.8f} | body_low:{body_low} body_high:{body_high}")
     if body_low > upper:
-        sig = "bullish"
-    elif body_high < lower:
-        sig = "bearish"
-
-    print(f"DEBUG {symbol} 5m -> decision: {sig if sig else 'NONE'}")
-    return sig
+        print(f"DEBUG {symbol} 5m -> decision: bullish")
+        return "bullish"
+    if body_high < lower:
+        print(f"DEBUG {symbol} 5m -> decision: bearish")
+        return "bearish"
+    print(f"DEBUG {symbol} 5m -> decision: NONE")
+    return None
 
 def verifier_bulles_5m():
     for symbol in SYMBOLS:
@@ -288,9 +239,31 @@ def verifier_bulles_5m():
         except Exception as e:
             print(f"Erreur verifier_bulles_5m {symbol}: {e}")
 
+# ---------------- BLOC TEST À SUPPRIMER (envoie la donnée de la bougie à chaque run) ----------------
+# Ce bloc envoie un message Telegram contenant la liste des dernières bougies fermées (O/C)
+# pour tous les SYMBOLS à CHAQUE exécution du job 5m. Supprime ce bloc après vérif.
+
+def send_candles_snapshot():
+    parts = []
+    for symbol in SYMBOLS:
+        try:
+            data = get_klines_with_retries(symbol, "5m", limit=5)
+            time.sleep(0.08)
+            if not isinstance(data, list) or len(data) < 2:
+                parts.append(f"{symbol}: no data")
+                continue
+            last = data[-2]
+            o = last[1]; c = last[4]
+            parts.append(f"{symbol} O:{o} C:{c}")
+        except Exception as e:
+            parts.append(f"{symbol}: err")
+    text = "<b>Snapshot 5m</b>\n" + "\n".join(parts)
+    send_telegram_with_retries(text)
+
+# ---------------- main ----------------
+
 if __name__ == "__main__":
-   # --- HEARTBEAT TEMPORAIRE (à supprimer après diagnostic) --
-    import datetime
-    now = datetime.datetime.utcnow().isoformat()
-    send_telegram_with_retries(f"HEARTBEAT: bot_5m run at {now} UTC")
+    # BLOC TEST: envoie snapshot à chaque run (SUPPRIMER plus tard si indésirable)
+    send_candles_snapshot()
+
     verifier_bulles_5m()
