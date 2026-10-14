@@ -1,8 +1,6 @@
 name: Bot Trading 5m
 
 on:
-  schedule:
-    - cron: '3-58/5 * * * *'
   workflow_dispatch:
 
 jobs:
