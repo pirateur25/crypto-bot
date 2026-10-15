@@ -10,6 +10,14 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
+      - name: Restaurer la mémoire des alertes
+        uses: actions/cache/restore@v4
+        with:
+          path: sent_alerts.json
+          key: sent-alerts-bot-${{ github.run_id }}
+          restore-keys: |
+            sent-alerts-bot-
+
       - name: Configuration de Python
         uses: actions/setup-python@v5
         with:
@@ -35,3 +43,10 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot.py
+
+      - name: Sauvegarder la mémoire des alertes
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: sent_alerts.json
+          key: sent-alerts-bot-${{ github.run_id }}
