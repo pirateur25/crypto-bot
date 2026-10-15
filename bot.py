@@ -183,32 +183,52 @@ def send_telegram_with_retries(message, max_retries=3):
             backoff *= 2
     return False
 
-# -------------------- Anti-doublon local --------------------
+# -------------------- Anti-doublon (mémoire conservée entre les runs via actions/cache) --------------------
+
+MEMORY_DAYS = 7  # une alerte est oubliée après 7 jours (un BPR 1h sort de la fenêtre analysée bien avant)
 
 def load_sent(filename=ALERTS_FILE):
     try:
         with open(filename, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            raw = json.load(f)
     except FileNotFoundError:
-        return set()
+        return {}
     except Exception as e:
         print("Erreur lecture sent_alerts:", e)
-        return set()
+        return {}
+    now = time.time()
+    if isinstance(raw, list):  # ancien format
+        return {k: now for k in raw}
+    return {k: v for k, v in raw.items() if now - v < MEMORY_DAYS * 86400}
 
 def save_sent(sent, filename=ALERTS_FILE):
     try:
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(sent)), f)
+            json.dump(sent, f)
     except Exception as e:
         print("Erreur écriture sent_alerts:", e)
 
-def mark_alert_sent(key):
+def already_sent(key):
+    return key in load_sent()
+
+def remember(keys):
     sent = load_sent()
-    if key in sent:
-        return False
-    sent.add(key)
+    now = time.time()
+    for k in keys:
+        sent[k] = now
     save_sent(sent)
+
+def mark_alert_sent(key):
+    """True si l'alerte est nouvelle (et la mémorise), False si déjà envoyée."""
+    if already_sent(key):
+        return False
+    remember([key])
     return True
+
+def candle_ts(k):
+    """Heure d'ouverture de la bougie en secondes (Binance en ms, KuCoin/Bybit en s)."""
+    ts = int(float(k[0]))
+    return ts // 1000 if ts > 10**11 else ts
 
 # -------------------- Bollinger (corps seulement) --------------------
 
@@ -230,18 +250,20 @@ def bollinger_body_signal(symbol, interval):
     close_price = float(last[4])
     body_low = min(open_price, close_price)
     body_high = max(open_price, close_price)
+    ts = candle_ts(last)
     if body_low > upper:
-        return "bullish"
+        return "bullish", ts
     if body_high < lower:
-        return "bearish"
+        return "bearish", ts
     return None
 
 def verifier_bulles(interval):
     for symbol in SYMBOLS:
         try:
-            sig = bollinger_body_signal(symbol, interval)
-            if sig:
-                key = f"{symbol}:{interval}:bollinger:{sig}"
+            res = bollinger_body_signal(symbol, interval)
+            if res:
+                sig, ts = res
+                key = f"{symbol}:{interval}:bollinger:{sig}:{ts}"
                 if not mark_alert_sent(key):
                     print("Duplicate alert skipped:", key)
                     continue
@@ -256,66 +278,82 @@ def verifier_bulles(interval):
             print(f"Erreur verifier_bulles {symbol} {interval}: {e}")
 
 # -------------------- BPR / FVG --------------------
+# BPR = zone d'intersection entre un FVG haussier et un FVG baissier.
+# Alerte quand la dernière bougie FERMÉE (15m ou 1h), mèche ou corps, touche un BPR (15m ou 1h).
+# Un BPR donné n'est signalé qu'une seule fois.
 
-def bpr_signal_for_interval(symbol, interval):
+TF_SECONDS = {"15m": 900, "1h": 3600}
+
+def analyse_tf(symbol, interval):
     data = get_klines_with_retries(symbol, interval, limit=80)
     time.sleep(0.12)
     if not isinstance(data, list) or len(data) < 60:
         return None
-    raw = data[:-1]
-    candles = [{"high": float(c[2]), "low": float(c[3]), "close": float(c[4])} for c in raw]
-    bullish_fvgs = []
-    bearish_fvgs = []
+    candles = [{"ts": candle_ts(c), "high": float(c[2]), "low": float(c[3]), "close": float(c[4])}
+               for c in data[:-1]]  # bougies fermées uniquement
+    bull, bear = [], []
     for i in range(2, len(candles)):
-        c1 = candles[i - 2]
-        c3 = candles[i]
+        c1, c3 = candles[i - 2], candles[i]
         if c1["high"] < c3["low"]:
-            bullish_fvgs.append({"top": c3["low"], "bottom": c1["high"], "index": i})
+            bull.append({"top": c3["low"], "bottom": c1["high"], "ts": c3["ts"]})
         if c1["low"] > c3["high"]:
-            bearish_fvgs.append({"top": c1["low"], "bottom": c3["high"], "index": i})
-    if not bullish_fvgs or not bearish_fvgs:
-        return None
+            bear.append({"top": c1["low"], "bottom": c3["high"], "ts": c3["ts"]})
     bprs = []
-    for bull in bullish_fvgs:
-        for bear in bearish_fvgs:
-            bpr_top = min(bull["top"], bear["top"])
-            bpr_bottom = max(bull["bottom"], bear["bottom"])
-            if bpr_bottom < bpr_top:
-                bprs.append({"top": bpr_top, "bottom": bpr_bottom, "maxIndex": max(bull["index"], bear["index"])})
-    if not bprs:
-        return None
-    last_close = candles[-1]["close"]
-    for bpr in bprs:
-        if bpr["maxIndex"] < len(candles) - 1:
-            if bpr["bottom"] <= last_close <= bpr["top"]:
-                mid = (bpr["top"] + bpr["bottom"]) / 2
-                return "bullish" if last_close >= mid else "bearish"
-    return None
+    for b in bull:
+        for r in bear:
+            top = min(b["top"], r["top"])
+            bottom = max(b["bottom"], r["bottom"])
+            if bottom < top:
+                bprs.append({
+                    "top": top, "bottom": bottom,
+                    # le BPR est complet quand la 3e bougie du dernier FVG est fermée
+                    "end": max(b["ts"], r["ts"]) + TF_SECONDS[interval],
+                    "id": f"{interval}:{b['ts']}:{r['ts']}",  # identifiant stable d'un BPR
+                })
+    return {"bprs": bprs, "last": candles[-1]}
+
+def fmt(x):
+    return f"{x:.8g}"
 
 def verifier_bpr_all():
-    for interval in ("15m", "1h"):
-        for symbol in SYMBOLS:
-            try:
-                sig = bpr_signal_for_interval(symbol, interval)
-                if sig:
-                    key = f"{symbol}:{interval}:bpr:{sig}"
-                    if not mark_alert_sent(key):
-                        print("Duplicate BPR skipped:", key)
+    for symbol in SYMBOLS:
+        try:
+            tfs = {}
+            for tf in ("15m", "1h"):
+                res = analyse_tf(symbol, tf)
+                if res:
+                    tfs[tf] = res
+            for candle_tf, cdata in tfs.items():
+                last = cdata["last"]
+                for bpr_tf, bdata in tfs.items():
+                    touched = [
+                        b for b in bdata["bprs"]
+                        if b["end"] <= last["ts"]                      # BPR formé avant la bougie
+                        and last["low"] <= b["top"] and last["high"] >= b["bottom"]  # mèche ou corps dans la zone
+                    ]
+                    new = [b for b in touched if not already_sent(f"{symbol}:bpr:{b['id']}")]
+                    if not new:
                         continue
-                    url = html.escape(tv_link(symbol, interval), quote=True)
+                    b = max(new, key=lambda x: x["end"])  # le plus récent (un seul message par cas)
+                    mid = (b["top"] + b["bottom"]) / 2
+                    sig = "bullish" if last["close"] >= mid else "bearish"
+                    url = html.escape(tv_link(symbol, bpr_tf), quote=True)
                     msg = (
-                        f"<b>🎯 {interval}</b> | <b>{symbol}</b> | <b>BPR / FVG {sig.upper()}</b>\n"
+                        f"<b>🎯 BPR {bpr_tf}</b> | <b>{symbol}</b> | <b>{sig.upper()}</b>\n"
+                        f"Bougie {candle_tf} dans la zone {fmt(b['bottom'])} - {fmt(b['top'])}\n"
                         f'<a href="{url}">📈 Ouvrir {symbol} sur TradingView (Binance)</a>'
                     )
-                    print("Send BPR alert:", key)
-                    send_telegram_with_retries(msg)
-            except Exception as e:
-                print(f"Erreur verifier_bpr {symbol} {interval}: {e}")
+                    print("Send BPR alert:", symbol, bpr_tf, b["id"], "candle", candle_tf)
+                    if send_telegram_with_retries(msg):
+                        remember([f"{symbol}:bpr:{x['id']}" for x in new])
+        except Exception as e:
+            print(f"Erreur verifier_bpr {symbol}: {e}")
 
 # -------------------- MAIN --------------------
 
 if __name__ == "__main__":
-    # Exécutons les checks
+    print("START bot")
     verifier_bulles("15m")
     verifier_bulles("1h")
     verifier_bpr_all()
+    print("END bot")
