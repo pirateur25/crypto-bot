@@ -279,10 +279,18 @@ def verifier_bulles(interval):
 
 # -------------------- BPR / FVG --------------------
 # BPR = zone d'intersection entre un FVG haussier et un FVG baissier.
-# Alerte quand la dernière bougie FERMÉE (15m ou 1h), mèche ou corps, touche un BPR (15m ou 1h).
-# Un BPR donné n'est signalé qu'une seule fois.
+# Un BPR est VALIDE si :
+#   1) aucune bougie (corps ou mèche) située entre les deux FVG ne touche la zone ;
+#   2) aucune bougie (corps ou mèche) n'a touché la zone depuis sa formation jusqu'à la bougie actuelle (non mitigé).
+# Alerte quand la dernière bougie FERMÉE (15m ou 1h) est la première à toucher un BPR valide (15m ou 1h).
+# Le contrôle de mitigation est recalculé à chaque run sur les bougies : aucune mémoire n'est nécessaire pour ça.
+# La mémoire (cache) ne sert qu'à ne jamais renvoyer deux fois la même alerte pour un même BPR.
 
 TF_SECONDS = {"15m": 900, "1h": 3600}
+
+def touches(c, top, bottom):
+    """Mèche ou corps de la bougie dans la zone [bottom, top]."""
+    return c["low"] <= top and c["high"] >= bottom
 
 def analyse_tf(symbol, interval):
     data = get_klines_with_retries(symbol, interval, limit=80)
@@ -295,22 +303,42 @@ def analyse_tf(symbol, interval):
     for i in range(2, len(candles)):
         c1, c3 = candles[i - 2], candles[i]
         if c1["high"] < c3["low"]:
-            bull.append({"top": c3["low"], "bottom": c1["high"], "ts": c3["ts"]})
+            bull.append({"top": c3["low"], "bottom": c1["high"], "i3": i})
         if c1["low"] > c3["high"]:
-            bear.append({"top": c1["low"], "bottom": c3["high"], "ts": c3["ts"]})
+            bear.append({"top": c1["low"], "bottom": c3["high"], "i3": i})
     bprs = []
     for b in bull:
         for r in bear:
             top = min(b["top"], r["top"])
             bottom = max(b["bottom"], r["bottom"])
-            if bottom < top:
-                bprs.append({
-                    "top": top, "bottom": bottom,
-                    # le BPR est complet quand la 3e bougie du dernier FVG est fermée
-                    "end": max(b["ts"], r["ts"]) + TF_SECONDS[interval],
-                    "id": f"{interval}:{b['ts']}:{r['ts']}",  # identifiant stable d'un BPR
-                })
-    return {"bprs": bprs, "last": candles[-1]}
+            if bottom >= top:
+                continue
+            first, second = (b, r) if b["i3"] < r["i3"] else (r, b)
+            # règle 1 : bougies situées entre les deux FVG (la 1re bougie du 2e FVG est à second.i3 - 2)
+            between = candles[first["i3"] + 1: second["i3"] - 2]
+            if any(touches(c, top, bottom) for c in between):
+                continue
+            bprs.append({
+                "top": top, "bottom": bottom,
+                # le BPR est complet quand la 3e bougie du dernier FVG est fermée
+                "end": candles[second["i3"]]["ts"] + TF_SECONDS[interval],
+                "id": f"{interval}:{candles[b['i3']]['ts']}:{candles[r['i3']]['ts']}",  # identifiant stable
+            })
+    return {"bprs": bprs, "last": candles[-1], "candles": candles}
+
+def is_mitigated(bpr, bpr_tf, last, tfs):
+    """Une bougie fermée AVANT la bougie actuelle a-t-elle déjà touché la zone depuis la formation du BPR ?
+    On utilise les bougies de l'unité du BPR, plus les 15m (plus précises) quand elles existent."""
+    sources = [(bpr_tf, tfs[bpr_tf]["candles"])]
+    if bpr_tf != "15m" and "15m" in tfs:
+        sources.append(("15m", tfs["15m"]["candles"]))
+    for tf, candles in sources:
+        for c in candles:
+            if (c["ts"] >= bpr["end"]
+                    and c["ts"] + TF_SECONDS[tf] <= last["ts"]  # bougie entièrement fermée avant la bougie actuelle
+                    and touches(c, bpr["top"], bpr["bottom"])):
+                return True
+    return False
 
 def fmt(x):
     return f"{x:.8g}"
@@ -328,8 +356,9 @@ def verifier_bpr_all():
                 for bpr_tf, bdata in tfs.items():
                     touched = [
                         b for b in bdata["bprs"]
-                        if b["end"] <= last["ts"]                      # BPR formé avant la bougie
-                        and last["low"] <= b["top"] and last["high"] >= b["bottom"]  # mèche ou corps dans la zone
+                        if b["end"] <= last["ts"]                  # BPR formé avant la bougie
+                        and touches(last, b["top"], b["bottom"])   # la bougie actuelle touche la zone
+                        and not is_mitigated(b, bpr_tf, last, tfs) # et c'est la première
                     ]
                     new = [b for b in touched if not already_sent(f"{symbol}:bpr:{b['id']}")]
                     if not new:
