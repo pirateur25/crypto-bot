@@ -251,28 +251,36 @@ def bollinger_body_signal(symbol, interval):
     body_low = min(open_price, close_price)
     body_high = max(open_price, close_price)
     ts = candle_ts(last)
+    # Distance entre le corps et la bande franchie : en % du prix et en écarts-types (σ) des 20 clôtures
     if body_low > upper:
-        return "bullish", ts
-    if body_high < lower:
-        return "bearish", ts
-    return None
+        dist, edge, side = body_low - upper, body_low, "bullish"   # plus bas du corps -> bande haute
+    elif body_high < lower:
+        dist, edge, side = lower - body_high, body_high, "bearish"  # plus haut du corps -> bande basse
+    else:
+        return None
+    dist_pct = dist / edge * 100 if edge else 0.0
+    dist_sigma = dist / std if std else 0.0
+    return side, ts, dist_pct, dist_sigma
 
 def verifier_bulles(interval):
     for symbol in SYMBOLS:
         try:
             res = bollinger_body_signal(symbol, interval)
             if res:
-                sig, ts = res
+                sig, ts, dist_pct, dist_sigma = res
                 key = f"{symbol}:{interval}:bollinger:{sig}:{ts}"
                 if not mark_alert_sent(key):
                     print("Duplicate alert skipped:", key)
                     continue
                 url = html.escape(tv_link(symbol, interval), quote=True)
                 # haussière = corps au-dessus de la bande haute ; baissière = corps sous la bande basse
-                position = "HAUTE (au-dessus des bandes)" if sig == "bullish" else "BASSE (en dessous des bandes)"
+                position = "HAUTE" if sig == "bullish" else "BASSE"
+                band = "bande haute" if sig == "bullish" else "bande basse"
+                body_edge = "plus bas du corps" if sig == "bullish" else "plus haut du corps"
                 msg = (
                     f"🔴🔴🔴 <b>{interval}</b> | <b>{symbol}</b>\n"
                     f"🔴 <b>Bulle apesanteur {position}</b>\n"
+                    f"Distance {body_edge} → {band} : <b>{dist_pct:.3f} %</b> | <b>{dist_sigma:.2f} σ</b>\n"
                     f'<a href="{url}">📈 Ouvrir {symbol} sur TradingView (Binance)</a>\n'
                     f"HTBB"
                 )
@@ -390,4 +398,4 @@ if __name__ == "__main__":
     verifier_bulles("1h")
     verifier_bpr_all()
     print("END bot")
-                
+    
