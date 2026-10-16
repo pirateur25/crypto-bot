@@ -268,9 +268,13 @@ def verifier_bulles(interval):
                     print("Duplicate alert skipped:", key)
                     continue
                 url = html.escape(tv_link(symbol, interval), quote=True)
+                # haussière = corps au-dessus de la bande haute ; baissière = corps sous la bande basse
+                position = "HAUTE (au-dessus des bandes)" if sig == "bullish" else "BASSE (en dessous des bandes)"
                 msg = (
-                    f"<b>🚨 {interval}</b> | <b>{symbol}</b> | <b>Bulle apesanteur {sig.upper()}</b>\n"
-                    f'<a href="{url}">📈 Ouvrir {symbol} sur TradingView (Binance)</a>'
+                    f"🔴🔴🔴 <b>{interval}</b> | <b>{symbol}</b>\n"
+                    f"🔴 <b>Bulle apesanteur {position}</b>\n"
+                    f'<a href="{url}">📈 Ouvrir {symbol} sur TradingView (Binance)</a>\n'
+                    f"HTBB"
                 )
                 print("Send alert:", key)
                 send_telegram_with_retries(msg)
@@ -386,3 +390,4 @@ if __name__ == "__main__":
     verifier_bulles("1h")
     verifier_bpr_all()
     print("END bot")
+                
