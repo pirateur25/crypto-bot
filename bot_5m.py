@@ -236,27 +236,41 @@ def bollinger_body_signal_5m(symbol):
     body_low = min(open_price, close_price)
     body_high = max(open_price, close_price)
     print(f"DEBUG {symbol} 5m -> last_closed O:{open_price} H:{high_price} L:{low_price} C:{close_price} | upper:{upper:.8f} lower:{lower:.8f} | body_low:{body_low} body_high:{body_high}")
+    # Distance entre le corps et la bande franchie (comparable d'une paire à l'autre) :
+    #  - en % du prix
+    #  - en écarts-types (σ) des 20 clôtures : mesure la force du dépassement par rapport à la volatilité de la paire
     if body_low > upper:
-        print(f"DEBUG {symbol} 5m -> decision: bullish")
-        return "bullish"
-    if body_high < lower:
-        print(f"DEBUG {symbol} 5m -> decision: bearish")
-        return "bearish"
-    print(f"DEBUG {symbol} 5m -> decision: NONE")
-    return None
+        dist = body_low - upper          # plus bas du corps -> bande haute
+        edge = body_low
+        side = "bullish"
+    elif body_high < lower:
+        dist = lower - body_high         # plus haut du corps -> bande basse
+        edge = body_high
+        side = "bearish"
+    else:
+        print(f"DEBUG {symbol} 5m -> decision: NONE")
+        return None
+    dist_pct = dist / edge * 100 if edge else 0.0
+    dist_sigma = dist / std if std else 0.0
+    print(f"DEBUG {symbol} 5m -> decision: {side} | dist:{dist:.8g} ({dist_pct:.3f}% / {dist_sigma:.2f} sigma)")
+    return side, dist_pct, dist_sigma
 
 def verifier_bulles_5m():
     for symbol in SYMBOLS:
         try:
-            sig = bollinger_body_signal_5m(symbol)
-            if sig:
+            res = bollinger_body_signal_5m(symbol)
+            if res:
+                sig, dist_pct, dist_sigma = res
                 key = f"{symbol}:5m:bollinger:{sig}"
                 if not mark_alert_sent(key):
                     print("Duplicate 5m alert skipped:", key)
                     continue
                 url = html.escape(tv_link(symbol, "5m"), quote=True)
+                band = "bande haute" if sig == "bullish" else "bande basse"
+                body_edge = "plus bas du corps" if sig == "bullish" else "plus haut du corps"
                 msg = (
                     f"<b>🚨 5M</b> | <b>{symbol}</b> | <b>Bulle apesanteur {sig.upper()}</b>\n"
+                    f"Distance {body_edge} → {band} : <b>{dist_pct:.3f} %</b> | <b>{dist_sigma:.2f} σ</b>\n"
                     f'<a href="{url}">📈 Ouvrir {symbol} sur TradingView (Binance)</a>'
                 )
                 print("Send 5m alert:", key)
@@ -266,7 +280,9 @@ def verifier_bulles_5m():
 
 # ---------------- main ----------------
 if __name__ == "__main__":
+    print("START bot_5m")
     try:
         verifier_bulles_5m()
     except Exception as e:
         print("Main: verifier_bulles_5m() exception:", e)
+    print("END bot_5m")
